@@ -1,0 +1,4 @@
+# Add here file extensions which should be ignored by git. 
+# Example:
+*.exe
+
