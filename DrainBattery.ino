@@ -15,7 +15,7 @@
 ESP8266WiFiMulti MyWiFi;
 
 void setup() {
-    pinMode(D1, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
+    pinMode(LED_BUILTIN, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
 
     Serial.begin(115200);
 
@@ -33,7 +33,7 @@ void loop() {
     // wait for WiFi connection
     if((MyWiFi.run() == WL_CONNECTED)) {
 
-        digitalWrite(D1, HIGH);   // Turn the LED on 
+        digitalWrite(LED_BUILTIN, HIGH);   // Turn the LED on 
 
         HTTPClient http;
 
@@ -63,7 +63,7 @@ void loop() {
 
         http.end();
     }
-    digitalWrite(D1, LOW);  // Turn the LED off 
+    digitalWrite(LED_BUILTIN, LOW);  // Turn the LED off 
 
     delay(1000);
 }
