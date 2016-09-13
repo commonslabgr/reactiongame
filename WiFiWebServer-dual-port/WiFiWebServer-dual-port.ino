@@ -1,3 +1,5 @@
+#include <Arduino.h>
+
 /*
  *  This sketch demonstrates how to set up a simple server, which
  *  listens to both port 80 (HTTP) and port 8080 at the same time.
