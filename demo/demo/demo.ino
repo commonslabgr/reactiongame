@@ -8,8 +8,8 @@
  * The light turns off and another turns on in random. The game counts how
  * many the user does correctly in a predifined time (30 secs).
  * Arduino uses a 4 zone 8x8 LED matrices display driven by MAX7219 to display
- * the score on the top 2 and the time on the bottom 2. 
- * We are using also a coin acceptor CH92xx. The game starts when a coin is 
+ * the score on the top 2 and the time on the bottom 2.
+ * We are using also a coin acceptor CH92xx. The game starts when a coin is
  * inserted.
  *
  * Author: Jann Kruse, Nikos Kanelakis, Dimitris Koukoulakis
@@ -30,15 +30,38 @@
 
 //Use of LED matrix display
 #define USE_LED_SCREEN 1
-
 //Use of Coin Acceptor
-#define USE_COIN_ACCEPTOR 1
+#define USE_COIN_ACCEPTOR 0
+//Use of shift register 74HC595
+#define USE_SHIFT_REG 0
+//DEBUG MODE
+#define DEBUG 0 //if set to 1 will print messages on Serial port.
 
 //GAME VARIABLES
 #define GAME_TIME 30
-//DEBUG MORE
-#define DEBUG 0 //if set to 1 will print messages on Serial port.
 
+#if USE_SHIFT_REG
+//Pin connected to ST_CP of 74HC595
+int latchPin = 8;
+//Pin connected to SH_CP of 74HC595
+int clockPin = 9;
+////Pin connected to DS of 74HC595
+int dataPin = 7;
+int led_pins[] = {0,1,2,3,4,5,6,7,8};
+//A2,A4,A5,2,3,4,5,6
+int btn_pins[] = {2,3,4,5,6,16,18,19};
+#else
+int btn_pins[] = {A0,A1,A2,A3,A4,A5,A6,4}; //Button PINs
+int led_pins[] = {12,11,10,9,8,7,6,5}; //LED PINs
+#endif //USE_SHIFT_REG
+// Global variables
+const int MAX_CONNS = 8;
+int buzz_plus = A7;
+int countdown = GAME_TIME;
+int score = 0; //Loop adds one point first time it runs
+bool game_on = false;
+
+#if USE_LED_SCREEN
 // Define the number of devices we have in the chain and the hardware interface
 // NOTE: These pin numbers will probably not work with your hardware and may
 // need to be adapted
@@ -46,29 +69,16 @@
 #define MAX_ZONES   4
 #define ZONE_SIZE (MAX_DEVICES/MAX_ZONES)   // integer multiple works best
 
-//Connection PIN for Coin Acceptor
-#define PULSE_INPUT 12
 //Connetion PINS for LED matrix
 #define CLK_PIN   13
-#define DATA_PIN  11
-#define CS_PIN    10
+#define DATA_PIN  2
+#define CS_PIN    3
 
 // Hardware SPI connection
-MD_Parola P = MD_Parola(CS_PIN, MAX_DEVICES);
+//MD_Parola P = MD_Parola(CS_PIN, MAX_DEVICES);
 // Arbitrary output pins
-// MD_Parola P = MD_Parola(DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
+MD_Parola P = MD_Parola(DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
 
-// Global variables
-int btn_pins[] = {3,5,7,9}; //Button PINs
-int led_pins[] = {2,4,6,8}; //LED PINs
-const int MAX_CONNS = 4;
-int buzz_minus = A0; 
-int buzz_plus = A3;
-int countdown = GAME_TIME;
-int score = 0; //Loop adds one point first time it runs
-bool game_on = false;
-
-#if USE_LED_SCREEN
 //Digit variables for LED matrix
 int d1 = 0;
 int d2 = 0;
@@ -84,6 +94,9 @@ unsigned long previousMillis = 0;
 int idx = -1;
 
 #if USE_COIN_ACCEPTOR
+//Connection PIN for Coin Acceptor
+#define PULSE_INPUT 12
+
 const char* CURRENCY = "EUR";   // Currency unit of the coin acceptor
 const int   MAX_PULSES = 99;    // Not more that so many pulses make sense. Stop counting here and complain.
 const int   centPerPulse = 50;  // This many 1/100th of a currency unit are counted per pulse.
@@ -125,10 +138,15 @@ state currentState;   // Holds the current state of the finite state machine.
 
 void setup(void) {
 
+#if DEBUG
   Serial.begin(9600);
-
+#endif
+  
 #if USE_LED_SCREEN
   InitLEDScreen();
+  #if DEBUG
+    Serial.println("Using LED Screen");
+  #endif
 #endif
 
   for(int i=0; i<MAX_CONNS; i++) {
@@ -138,74 +156,151 @@ void setup(void) {
 
   // Set up the pins for the buzzer:
   pinMode(buzz_plus, OUTPUT);
-  pinMode(buzz_minus, OUTPUT);
-  digitalWrite(buzz_minus, LOW);    // pull the minus pin to 0 Volt by making it "LOW"
 
 #if USE_COIN_ACCEPTOR
+  #if DEBUG
+    Serial.println("Using Coin Acceptor");
+  #endif
   currentState = INIT;
   pinMode(PULSE_INPUT,  INPUT);
-  digitalWrite(PULSE_INPUT, LOW); // Dectivate internal pull-up resistor. (So it's not HIGH when idle.)  
+  digitalWrite(PULSE_INPUT, LOW); // Dectivate internal pull-up resistor. (So it's not HIGH when idle.)
 #endif
-  Serial.println("Starting...");
-  gameStart();
+#if USE_SHIFT_REG
+  #if DEBUG
+    Serial.println("Using Shift Register");
+  #endif
+  pinMode(latchPin, OUTPUT);
+  pinMode(clockPin, OUTPUT);
+  pinMode(dataPin, OUTPUT);
+#endif //USE_SHIFT_REG  
+  
+  //gameStart();
+  delay(100);
+  
+  for(int i= 0; i < MAX_CONNS; i++) {
+    turnLedOn(i);
+    delay(800);
+    clearLeds();
+  }/**/
 }
 
 void generateRandom()
 {
-  randomSeed(analogRead(A5)*analogRead(A6));
+  randomSeed(analogRead(A0)*analogRead(A7));
   for(int i=0; i<10; i++) {
-    int rnd = int(random(MAX_CONNS));
+    int rnd = random(0,MAX_CONNS);
     if(rnd != idx) {
       idx = rnd;
       break;
     }
   }
+#if DEBUG 
+  Serial.print("Generated Random:");
+  Serial.println(idx);
+#endif
 }
 
+#if USE_SHIFT_REG
+void registerWrite(int whichPin, int whichState) {
+// the bits you want to send
+  byte bitsToSend = 0;
+  // turn off the output so the pins don't light up
+  // while you're shifting bits:
+  digitalWrite(latchPin, LOW);
+  // turn on the next highest bit in bitsToSend:
+  bitWrite(bitsToSend, whichPin, whichState);
+  // shift the bits out:
+  shiftOut(dataPin, clockPin, MSBFIRST, bitsToSend);
+  // turn on the output so the LEDs can light up:
+  digitalWrite(latchPin, HIGH);
+}
+#endif //USE_SHIFT_REG
+
+#if USE_LED_SCREEN
 void checkTime()
 {
   if(currentMillis - previousMillis > interval) {
-    Serial.print("Time:");
-    Serial.println(countdown);
+    #if DEBUG
+      Serial.print("Time:");
+      Serial.println(countdown);
+    #endif
     previousMillis = currentMillis;
-    #if USE_LED_SCREEN
-      PrintTime();
-    #endif //USE_LED_SCREEN
+    PrintTime();
   }
+}
+#endif //USE_LED_SCREEN
+
+void turnLedOn(int led) {
+  #if DEBUG
+    Serial.print("Turn ON LED:");
+    Serial.println(led);
+    Serial.print("Pin:");
+    Serial.println(led_pins[led]);
+  #endif
+  #if USE_SHIFT_REG
+    registerWrite(led_pins[led],HIGH); 
+  #else
+    digitalWrite(led_pins[led], HIGH);
+  #endif
 }
 
 void loop(void)
 {
   while(game_on) {
+#if USE_LED_SCREEN
     currentMillis = millis();
-
     //Turn OFF all LEDs
     clearLeds();
     //Turn ON the random LED
-    digitalWrite(led_pins[idx], HIGH);
+    turnLedOn(idx);
 
     //Read all the buttons
     for (int i=0; i < MAX_CONNS; i++) {
       delay(10);
-      if( (digitalRead(btn_pins[i]) == HIGH) && (i == idx)) {
-        clearLeds();  
+      previousMillis+=10;
+      #if DEBUG
+        Serial.print("Reading button:");
+        Serial.println(btn_pins[i]);
+        Serial.print("Input:");
+        Serial.println(digitalRead(btn_pins[i]) );
+      #endif
+      if( ((digitalRead(btn_pins[i]) == HIGH) && (i == idx)) || ((btn_pins[i] == A6) && (analogRead(btn_pins[i]) > 1000 && (i == idx)))) {
+        clearLeds();
         AddPoint();
-        while ( (digitalRead(btn_pins[i]) == HIGH) && (i == idx)) {}; // wait until butten is released
+        while ( (digitalRead(btn_pins[i]) == HIGH) && (i == idx)) {}; // wait until button is released
         generateRandom(); // select another random led
         return;
       } else if (digitalRead(btn_pins[i]) == HIGH) {
-        Error();
+        //Error();
+        for (int x=0; x<MAX_CONNS;x++) {
+          turnLedOn(x);
+        }
+        delay(200);
+        clearLeds();
+        turnLedOn(idx);
       }
     }
-
     checkTime();
-
     if (countdown < 0) {
       gameEnd();
       return;
-    }
+    }  
+#endif //USE_LED_SCREEN
   }//while game_on
-
+  
+  //Restart game
+  /*
+  while (game_on == false) {
+    clearLeds();
+    delay(10);
+    for (int i=0; i < MAX_CONNS; i++) {
+      if((digitalRead(btn_pins[i]) == HIGH) || ((btn_pins[i] == A6) && (analogRead(btn_pins[i]) > 1000))){
+        gameStart();
+        return;
+      }
+    }
+  }
+  */
 #if USE_COIN_ACCEPTOR
   switch (currentState) {
     case INIT:
@@ -238,7 +333,7 @@ void loop(void)
       currentState = START_CONFIRM;
     break;
 
-  
+
     case START_CONFIRM:
     //ENTRY:
       tLow = millis(); // Save system time when pin went LOW.
@@ -340,8 +435,8 @@ void loop(void)
     default:
      if (VERBOSE) Serial.println("FELL INTO DEFAULT CASE!!!");
     break;
-  }  
-#endif  
+  }
+#endif //USE_COIN_ACCEPTOR
 }
 
 #if USE_LED_SCREEN
@@ -408,15 +503,18 @@ void InitLEDScreen() {
   }
 }
 #endif //USE_LED_SCREEN
+
 void gameStart() {
-  Serial.println("Game starting...");
+  #if DEBUG
+    Serial.println("Game starting...");
+  #endif
   game_on = true;
   //Initialize global vars
   score = 0;
-  countdown = GAME_TIME;
   //Generate First random number
   generateRandom();
   #if USE_LED_SCREEN
+    countdown = GAME_TIME;
     //InitLEDScreen();
     P.displayZoneText(0,"0",CENTER,5, 0,PRINT, NO_EFFECT);
     P.displayZoneText(1,"0",CENTER,5, 0,PRINT, NO_EFFECT);
@@ -424,10 +522,9 @@ void gameStart() {
   #endif
 
   for(int i=0; i<MAX_CONNS; i++) {
-    digitalWrite(led_pins[i], HIGH);
+    turnLedOn(i);
   }
-  tone(A3, 440, 200);
-  delay(2000);
+  delay(500);
 }
 
 void gameEnd() {
@@ -437,16 +534,22 @@ void gameEnd() {
     P.displayZoneText(2,"*",CENTER,5, 0,PRINT, NO_EFFECT);
     P.displayZoneText(3,"*",CENTER,5, 0,PRINT, NO_EFFECT);
     PrintScore();
-#endif  
+#endif
+#if DEBUG
   Serial.println("Game Finished");
+#endif  
   for(int i=0; i<MAX_CONNS; i++) {
-    digitalWrite(led_pins[i], HIGH);
+    turnLedOn(i);
   }
 }
 
 void clearLeds() {
   for(int i=0; i<MAX_CONNS; i++) {
-    digitalWrite(led_pins[i], LOW);
+    #if USE_SHIFT_REG
+      registerWrite(led_pins[i],LOW); 
+    #else
+      digitalWrite(led_pins[i], LOW);
+    #endif
   }
 }
 
@@ -463,14 +566,19 @@ void Error()
     delay(10);
     //each loop is 14 millisecs
   }
+#if USE_LED_SCREEN
   previousMillis+=280;
   checkTime();
+#endif //USE_LED_SCREEN
   //TODO: Use Led matrix on error?
 }
 
 //User pressed correct button
 void AddPoint()
 {
+  #if DEBUG
+    Serial.println("Point added");
+  #endif  
   for (int i=0; i<250; i++)
   {
     digitalWrite(buzz_plus, HIGH);
@@ -478,12 +586,14 @@ void AddPoint()
     digitalWrite(buzz_plus, LOW);
     delayMicroseconds(200);
   }
-  previousMillis+=100;
-  checkTime();
   score++;
-  Serial.print("Score: ");
-  Serial.println(score);
   #if USE_LED_SCREEN
+    previousMillis+=100;
+    #if DEBUG
+    Serial.print("Score: ");
+    Serial.println(score);
+    #endif
+    checkTime();
     PrintScore();
   #endif //USE_LED_SCREEN
 }
